@@ -235,6 +235,17 @@ Typical cost per dependency PR varies by provider:
 | OpenAI (GPT-4o) | $0.05 – $0.20 |
 | Self-hosted | Infrastructure cost only |
 
+## Privacy & Data
+
+This action sends the following data to the configured LLM provider to generate fixes:
+
+- **Dependency diff** — changes to lockfiles and manifests
+- **Test failure output** — stderr/stdout from your test runner
+- **Source file snippets** — files that import the updated dependency (up to ~50KB)
+- **PR metadata** — title, description, and branch name
+
+No API keys, secrets, or credentials are included in the LLM request. If your organization has policies about sending source code to third-party APIs, consider using the `openai-compatible` provider with a **self-hosted model** to keep all data on your own infrastructure.
+
 ## License
 
 Apache-2.0
