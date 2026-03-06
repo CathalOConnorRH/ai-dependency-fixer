@@ -45,7 +45,7 @@ detect_install_cmd() {
     fi
   elif [[ -f "pyproject.toml" ]]; then
     if grep -q "poetry" pyproject.toml 2>/dev/null; then
-      echo "poetry install"
+      echo "poetry install --with dev 2>/dev/null || poetry install"
     else
       echo "pip install -e '.[dev]' 2>/dev/null || pip install -e . 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true"
     fi

@@ -134,16 +134,16 @@ def call_openai(user_message: str, model: str, base_url: str | None = None) -> s
 
 def call_llm(context: dict, attempt: int, previous_attempts: list) -> dict:
     """Route to the configured LLM provider and return the parsed response."""
-    provider = os.environ.get("AI_PROVIDER", "anthropic").lower()
+    provider = (os.environ.get("AI_PROVIDER") or "anthropic").lower()
     default_model = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["openai"])
-    model = os.environ.get("AI_MODEL", default_model)
+    model = os.environ.get("AI_MODEL") or default_model
 
     user_message = build_user_message(context, attempt, previous_attempts)
 
     if provider == "anthropic":
         response_text = call_anthropic(user_message, model)
     elif provider in ("openai", "openai-compatible"):
-        base_url = os.environ.get("AI_BASE_URL") if provider == "openai-compatible" else None
+        base_url = os.environ.get("AI_BASE_URL") or None
         response_text = call_openai(user_message, model, base_url=base_url)
     else:
         raise ValueError(
@@ -242,8 +242,8 @@ def main():
         with open(history_file) as f:
             previous_attempts = json.load(f)
 
-    provider = os.environ.get("AI_PROVIDER", "anthropic")
-    model = os.environ.get("AI_MODEL", PROVIDER_DEFAULTS.get(provider, ""))
+    provider = os.environ.get("AI_PROVIDER") or "anthropic"
+    model = os.environ.get("AI_MODEL") or PROVIDER_DEFAULTS.get(provider, "")
     print(f"Calling AI for fix attempt {attempt} (provider={provider}, model={model})...")
     try:
         result = call_llm(context, attempt, previous_attempts)
