@@ -81,6 +81,31 @@ runs:
         INPUT_TEST_COMMAND: ${{ inputs.test-command }}
         INPUT_INSTALL_COMMAND: ${{ inputs.install-command }}
 
+    - name: Install required tooling
+      shell: bash
+      run: |
+        INSTALL_CMD="${{ steps.detect.outputs.install_cmd }}"
+        case "$INSTALL_CMD" in
+          poetry*)
+            if ! command -v poetry &>/dev/null; then
+              echo "Installing Poetry..."
+              pip install poetry
+            fi
+            ;;
+          pnpm*)
+            if ! command -v pnpm &>/dev/null; then
+              echo "Installing pnpm..."
+              npm install -g pnpm
+            fi
+            ;;
+          bundle*)
+            if ! command -v bundle &>/dev/null; then
+              echo "Installing Bundler..."
+              gem install bundler
+            fi
+            ;;
+        esac
+
     - name: Install project dependencies
       shell: bash
       run: |
