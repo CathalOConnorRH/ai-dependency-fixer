@@ -1,23 +1,31 @@
 # AI Dependency Fixer
 
-A reusable GitHub Action that automatically fixes breaking changes from dependency update PRs (Renovate, Dependabot, etc.) using AI.
+A reusable GitHub Action that automatically fixes breaking changes from dependency update PRs and proactively updates code to use current APIs — using AI.
 
 Supports **Anthropic (Claude)**, **OpenAI (GPT)**, and **self-hosted LLMs** via any OpenAI-compatible API (Ollama, vLLM, llama.cpp, LiteLLM, etc.).
 
 ## How It Works
 
+### Two Modes
+
+| Mode | When tests fail | When tests pass |
+|------|----------------|-----------------|
+| **`investigate`** (default) | Fixes the code to make tests pass | Proactively reviews changes and updates deprecated/changed APIs |
+| **`fix`** | Fixes the code to make tests pass | Exits immediately — no changes |
+
+### Flow
+
 ```
-Renovate opens PR → Tests fail → AI analyzes errors → Generates fix → Tests pass → Commits fix
+Renovate opens PR → Run tests → Tests fail? → AI fixes code → Tests pass → Commit
+                                Tests pass? → AI investigates changes → Updates code → Verify tests still pass → Commit
 ```
 
 1. Triggers on PRs from Renovate or Dependabot
-2. Runs your test suite to check if the update breaks anything
-3. If tests fail, gathers context (dependency diff, error output, relevant source files)
-4. Sends context to the configured LLM to generate targeted code fixes
-5. Applies the fix and re-runs tests
-6. Retries up to N times with accumulated context from previous attempts
-7. If tests pass, commits and pushes the fix to the PR branch
-8. If all attempts fail, reverts changes and posts a comment explaining what was tried
+2. Runs your test suite
+3. **If tests fail** — gathers context (dependency diff, errors, source files), sends to the LLM, applies the fix, verifies tests pass, retries up to N times
+4. **If tests pass (investigate mode)** — still analyzes the dependency changes, looks for deprecated APIs or outdated patterns, applies proactive updates, then **verifies tests still pass** before committing
+5. If proactive changes break tests, they are **automatically reverted** — the code is never left in a broken state
+6. All changes are committed to the PR branch for human review before merge
 
 ### Flow Diagram
 
@@ -25,49 +33,50 @@ Renovate opens PR → Tests fail → AI analyzes errors → Generates fix → Te
 flowchart TD
     A["PR opened/updated"] --> B{"PR author is\nRenovate or Dependabot?"}
     B -- No --> Z["Skip — not a dependency bot"]
-    B -- Yes --> C["Set up Python"]
-    C --> D["Install AI provider SDK\n(anthropic or openai)"]
-    D --> E["Detect language,\ntest & install commands"]
-    E --> F["Install required tooling\n(Poetry, pnpm, Bundler if needed)"]
-    F --> G["Install project dependencies"]
-    G --> H["Run tests"]
+    B -- Yes --> C["Setup: Python, AI SDK,\ndetect language, install deps"]
+    C --> H["Run tests"]
 
     H --> I{"Tests pass?"}
-    I -- Yes --> J["Exit: already-passing"]
 
     I -- No --> K["Initialize attempt = 1"]
     K --> L["Gather context\n(dep diff, errors, source files)"]
-    L --> M["Call LLM for fix\n(Anthropic / OpenAI / self-hosted)"]
-
-    M --> N{"API call\nsucceeded?"}
+    L --> M["Call LLM to fix code"]
+    M --> N{"Fix generated\nand valid?"}
     N -- No --> R["Revert changes"]
-
-    N -- Yes --> O["Validate response\n(safety checks)"]
-    O --> P{"Valid?"}
-    P -- No --> R
-
-    P -- Yes --> Q["Apply edits to source files"]
-    Q --> S{"Edits applied\nsuccessfully?"}
-    S -- No --> R
-
-    S -- Yes --> T["Re-install dependencies"]
-    T --> U["Run tests"]
-    U --> V{"Tests pass?"}
-
-    V -- Yes --> W["Commit & push fix"]
+    N -- Yes --> Q["Apply edits"]
+    Q --> T["Re-install deps, run tests"]
+    T --> V{"Tests pass?"}
+    V -- Yes --> W["Commit & push"]
     W --> X["Post PR comment: fixed"]
     X --> Y["Exit: fixed"]
-
     V -- No --> R
-    R --> AA["Save attempt to history"]
-    AA --> AB{"Attempts\n< max?"}
+    R --> AB{"Attempts\n< max?"}
     AB -- Yes --> AC["attempt += 1"] --> L
     AB -- No --> AD["Revert all changes"]
     AD --> AE["Post PR comment: needs manual fix"]
     AE --> AF["Exit: failed"]
 
+    I -- Yes --> INV{"Mode =\ninvestigate?"}
+    INV -- No --> J["Exit: already-passing"]
+    INV -- Yes --> IG["Gather context\n(dep diff, source files)"]
+    IG --> IM["Call LLM to investigate\ndeprecated/changed APIs"]
+    IM --> IC{"Changes\nsuggested?"}
+    IC -- No --> IU["Post PR comment: up to date"]
+    IU --> J2["Exit: already-passing"]
+    IC -- Yes --> IA["Apply proactive edits"]
+    IA --> IT["Re-install deps, run tests"]
+    IT --> IV{"Tests still\npass?"}
+    IV -- Yes --> IW["Commit & push"]
+    IW --> IX["Post PR comment: proactive update"]
+    IX --> IY["Exit: fixed"]
+    IV -- No --> IR["Revert all changes\n(never leave broken)"]
+    IR --> J3["Exit: already-passing"]
+
     style J fill:#22c55e,color:#fff
+    style J2 fill:#22c55e,color:#fff
+    style J3 fill:#22c55e,color:#fff
     style Y fill:#22c55e,color:#fff
+    style IY fill:#22c55e,color:#fff
     style AF fill:#ef4444,color:#fff
     style Z fill:#6b7280,color:#fff
 ```
@@ -75,12 +84,15 @@ flowchart TD
 ## Safety Guardrails
 
 - Will NOT delete or skip tests
-- Will NOT remove existing functionality
+- Will NOT remove existing code, functions, classes, or methods
+- Will NOT change public API contracts (function signatures, return types, external behavior)
 - Will NOT modify lockfiles or dependency manifests
 - Will NOT add new dependencies
+- Rejects edits that significantly reduce code size (detects code deletion)
 - Rejects AI edits larger than a configurable line limit
+- In investigate mode, **automatically reverts** proactive changes if tests break
 - Reverts all changes if unable to fix after max attempts
-- All fixes are committed to the PR branch for human review before merge
+- All changes are committed to the PR branch for human review before merge
 
 ## Supported Languages
 
@@ -131,6 +143,8 @@ jobs:
       - uses: your-org/ai-dependency-fixer@v1
         with:
           ai-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # mode: investigate  # default — also proactively updates passing code
+          # mode: fix          # only fix failing tests
 ```
 
 ### Using OpenAI (GPT)
@@ -163,6 +177,7 @@ Any server that exposes an OpenAI-compatible `/v1/chat/completions` endpoint wor
 | `ai-api-key` | Yes | - | API key for the chosen provider |
 | `ai-provider` | No | `anthropic` | Provider: `anthropic`, `openai`, or `openai-compatible` |
 | `ai-base-url` | No | - | Base URL for self-hosted models (only with `openai-compatible`) |
+| `mode` | No | `investigate` | `investigate` (proactive + reactive) or `fix` (reactive only) |
 | `max-attempts` | No | `3` | Max fix attempts before giving up |
 | `test-command` | No | `auto` | Test command (`auto` for detection) |
 | `install-command` | No | `auto` | Install command (`auto` for detection) |
@@ -234,6 +249,17 @@ Typical cost per dependency PR varies by provider:
 | Anthropic (Claude) | $0.05 – $0.15 |
 | OpenAI (GPT-4o) | $0.05 – $0.20 |
 | Self-hosted | Infrastructure cost only |
+
+## Privacy & Data
+
+This action sends the following data to the configured LLM provider to generate fixes:
+
+- **Dependency diff** — changes to lockfiles and manifests
+- **Test failure output** — stderr/stdout from your test runner
+- **Source file snippets** — files that import the updated dependency (up to ~50KB)
+- **PR metadata** — title, description, and branch name
+
+No API keys, secrets, or credentials are included in the LLM request. If your organization has policies about sending source code to third-party APIs, consider using the `openai-compatible` provider with a **self-hosted model** to keep all data on your own infrastructure.
 
 ## License
 

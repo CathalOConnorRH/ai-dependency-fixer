@@ -16,6 +16,10 @@ inputs:
     description: 'Base URL for OpenAI-compatible self-hosted models (e.g. http://localhost:11434/v1)'
     required: false
     default: ''
+  mode:
+    description: 'Operating mode: "fix" only fixes failing tests, "investigate" also proactively updates passing code'
+    required: false
+    default: 'investigate'
   max-attempts:
     description: 'Maximum number of fix attempts before giving up'
     required: false
@@ -43,7 +47,7 @@ inputs:
 
 outputs:
   result:
-    description: 'Result of the fix attempt: "fixed", "already-passing", "failed"'
+    description: 'Result: "fixed", "already-passing", or "failed"'
     value: ${{ steps.fix-loop.outputs.result }}
   attempts:
     description: 'Number of fix attempts made'
@@ -122,6 +126,7 @@ runs:
         INSTALL_CMD: ${{ steps.detect.outputs.install_cmd }}
         MAX_ATTEMPTS: ${{ inputs.max-attempts }}
         MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
+        AI_MODE: ${{ inputs.mode }}
         AI_PROVIDER: ${{ inputs.ai-provider }}
         AI_MODEL: ${{ inputs.ai-model }}
         AI_BASE_URL: ${{ inputs.ai-base-url }}

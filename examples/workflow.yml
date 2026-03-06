@@ -30,6 +30,8 @@ jobs:
           ai-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           # ai-provider: anthropic            # default
           # ai-model: claude-sonnet-4-20250514  # default
+          # mode: investigate                 # default — proactively updates code even when tests pass
+          # mode: fix                         # only fix failing tests, skip investigation
           # max-attempts: 3
           # max-diff-lines: 200
 

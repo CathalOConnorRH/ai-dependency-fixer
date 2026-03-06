@@ -2,51 +2,52 @@
 
 ```mermaid
 flowchart TD
-    A["PR opened/updated"] --> B{"PR author is<br/>Renovate or Dependabot?"}
+    A["PR opened/updated"] --> B{"PR author is\nRenovate or Dependabot?"}
     B -- No --> Z["Skip — not a dependency bot"]
-    B -- Yes --> C["Set up Python"]
-    C --> D["Install AI provider SDK<br/>(anthropic or openai)"]
-    D --> E["Detect language,<br/>test & install commands"]
-    E --> F["Install required tooling<br/>(Poetry, pnpm, Bundler if needed)"]
-    F --> G["Install project dependencies"]
-    G --> H["Run tests"]
+    B -- Yes --> C["Setup: Python, AI SDK,\ndetect language, install deps"]
+    C --> H["Run tests"]
 
     H --> I{"Tests pass?"}
-    I -- Yes --> J["✅ Exit: already-passing"]
 
     I -- No --> K["Initialize attempt = 1"]
-    K --> L["Gather context<br/>(dep diff, errors, source files)"]
-    L --> M["Call LLM for fix<br/>(Anthropic / OpenAI / self-hosted)"]
-
-    M --> N{"API call<br/>succeeded?"}
+    K --> L["Gather context\n(dep diff, errors, source files)"]
+    L --> M["Call LLM to fix code"]
+    M --> N{"Fix generated\nand valid?"}
     N -- No --> R["Revert changes"]
-
-    N -- Yes --> O["Validate response<br/>(safety checks)"]
-    O --> P{"Valid?"}
-    P -- No --> R
-
-    P -- Yes --> Q["Apply edits to source files"]
-    Q --> S{"Edits applied<br/>successfully?"}
-    S -- No --> R
-
-    S -- Yes --> T["Re-install dependencies"]
-    T --> U["Run tests"]
-    U --> V{"Tests pass?"}
-
-    V -- Yes --> W["Commit & push fix"]
-    W --> X["Post PR comment: ✅ fixed"]
-    X --> Y["✅ Exit: fixed"]
-
+    N -- Yes --> Q["Apply edits"]
+    Q --> T["Re-install deps, run tests"]
+    T --> V{"Tests pass?"}
+    V -- Yes --> W["Commit & push"]
+    W --> X["Post PR comment: fixed"]
+    X --> Y["Exit: fixed"]
     V -- No --> R
-    R --> AA["Save attempt to history"]
-    AA --> AB{"Attempts<br/>< max?"}
+    R --> AB{"Attempts\n< max?"}
     AB -- Yes --> AC["attempt += 1"] --> L
     AB -- No --> AD["Revert all changes"]
-    AD --> AE["Post PR comment: ❌ needs manual fix"]
-    AE --> AF["❌ Exit: failed"]
+    AD --> AE["Post PR comment: needs manual fix"]
+    AE --> AF["Exit: failed"]
+
+    I -- Yes --> INV{"Mode =\ninvestigate?"}
+    INV -- No --> J["Exit: already-passing"]
+    INV -- Yes --> IG["Gather context\n(dep diff, source files)"]
+    IG --> IM["Call LLM to investigate\ndeprecated/changed APIs"]
+    IM --> IC{"Changes\nsuggested?"}
+    IC -- No --> IU["Post PR comment: up to date"]
+    IU --> J2["Exit: already-passing"]
+    IC -- Yes --> IA["Apply proactive edits"]
+    IA --> IT["Re-install deps, run tests"]
+    IT --> IV{"Tests still\npass?"}
+    IV -- Yes --> IW["Commit & push"]
+    IW --> IX["Post PR comment: proactive update"]
+    IX --> IY["Exit: fixed"]
+    IV -- No --> IR["Revert all changes\n(never leave broken)"]
+    IR --> J3["Exit: already-passing"]
 
     style J fill:#22c55e,color:#fff
+    style J2 fill:#22c55e,color:#fff
+    style J3 fill:#22c55e,color:#fff
     style Y fill:#22c55e,color:#fff
+    style IY fill:#22c55e,color:#fff
     style AF fill:#ef4444,color:#fff
     style Z fill:#6b7280,color:#fff
 ```

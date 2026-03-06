@@ -2,11 +2,14 @@
 set -euo pipefail
 
 # Main fix loop: run tests, call AI, apply fix, repeat.
-# Exits with appropriate output for the GitHub Action.
+# Supports two modes:
+#   AI_MODE=fix         — only fix failing tests (default)
+#   AI_MODE=investigate  — also proactively update code when tests pass
 
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 TEST_CMD="${TEST_CMD:?TEST_CMD is required}"
 SCRIPTS_DIR="${SCRIPTS_DIR:?SCRIPTS_DIR is required}"
+AI_MODE="${AI_MODE:-fix}"
 
 CONTEXT_FILE=".ai-context.json"
 HISTORY_FILE=".ai-history.json"
@@ -31,7 +34,6 @@ run_tests() {
     echo "Tests failed (exit code: $exit_code)."
     tail -50 "$TEST_OUTPUT_FILE"
 
-    # Detect if the test runner itself is missing (not a test failure the AI can fix)
     if [[ $exit_code -eq 127 ]] || grep -qi "command not found" "$TEST_OUTPUT_FILE" 2>/dev/null; then
       echo "::error::Test runner not found. Ensure your test framework (e.g. pytest) is listed as a project dependency."
       echo "::error::If using Poetry, add pytest to [tool.poetry.group.dev.dependencies] in pyproject.toml"
@@ -43,15 +45,30 @@ run_tests() {
 }
 
 commit_fixes() {
-  git config user.name "ai-dependency-fixer[bot]"
-  git config user.email "ai-dependency-fixer[bot]@users.noreply.github.com"
-  git add -A
-  git commit -m "$(cat <<'EOF'
+  local mode="$1"
+  local commit_msg
+
+  if [[ "$mode" == "investigate" ]]; then
+    commit_msg="$(cat <<'EOF'
+chore: proactively update code for new dependency version
+
+Applied by ai-dependency-fixer GitHub Action (investigate mode).
+No API contracts were changed. Tests verified passing after update.
+EOF
+)"
+  else
+    commit_msg="$(cat <<'EOF'
 fix: auto-fix breaking changes from dependency update
 
 Applied by ai-dependency-fixer GitHub Action.
 EOF
 )"
+  fi
+
+  git config user.name "ai-dependency-fixer[bot]"
+  git config user.email "ai-dependency-fixer[bot]@users.noreply.github.com"
+  git add -A
+  git commit -m "$commit_msg"
   git push
 }
 
@@ -84,8 +101,45 @@ ${edits_summary}
 <summary>Review the changes carefully before merging.</summary>
 
 The AI made minimal, targeted changes to adapt the code to the new dependency version.
-No tests were removed or skipped.
+No tests were removed or skipped. No API contracts were changed.
 </details>
+COMMENT
+)
+  elif [[ "$status" == "investigated" ]]; then
+    local edits_summary=""
+    if [[ -f ".ai-last-edits.json" ]]; then
+      edits_summary=$(python3 -c "
+import json
+with open('.ai-last-edits.json') as f:
+    data = json.load(f)
+print(f\"**Analysis:** {data.get('analysis', 'N/A')}\n\")
+for e in data.get('edits', []):
+    print(f\"- \`{e['file']}\`: updated code\")
+" 2>/dev/null || echo "")
+    fi
+
+    body=$(cat <<COMMENT
+### :robot: AI Dependency Fixer - Proactive Update
+
+Tests were already passing, but the AI found code that could be updated for the new dependency version.
+
+${edits_summary}
+
+<details>
+<summary>Review the changes carefully before merging.</summary>
+
+The AI proactively updated internal implementation details to use current APIs from the new dependency version.
+No tests were removed or skipped. No public API contracts were changed.
+All tests verified passing after the update.
+</details>
+COMMENT
+)
+  elif [[ "$status" == "up-to-date" ]]; then
+    body=$(cat <<COMMENT
+### :robot: AI Dependency Fixer - No Changes Needed
+
+Tests are passing and the AI reviewed the dependency changes — no code updates are needed.
+The code is already compatible with the new dependency version.
 COMMENT
 )
   elif [[ "$status" == "failed" ]]; then
@@ -149,12 +203,138 @@ print(event.get('pull_request', {}).get('number', ''))
   fi
 }
 
+run_fix_loop() {
+  echo "[]" > "$HISTORY_FILE"
+
+  for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+    echo ""
+    echo "--- Fix attempt $attempt of $MAX_ATTEMPTS ---"
+
+    bash "$SCRIPTS_DIR/gather-context.sh" "$CONTEXT_FILE"
+
+    set +e
+    AI_MODE=fix python3 "$SCRIPTS_DIR/ai-fix.py" "$CONTEXT_FILE" "$attempt" "$HISTORY_FILE"
+    ai_exit=$?
+    set -e
+
+    if [[ $ai_exit -ne 0 ]]; then
+      echo "AI fix attempt $attempt failed to generate or apply a fix."
+      git checkout -- . 2>/dev/null || true
+      continue
+    fi
+
+    if [[ -n "${INSTALL_CMD:-}" ]]; then
+      echo "::group::Reinstalling dependencies"
+      eval "$INSTALL_CMD" 2>/dev/null || true
+      echo "::endgroup::"
+    fi
+
+    if run_tests; then
+      echo ""
+      echo "Tests pass after attempt $attempt!"
+      commit_fixes "fix"
+      post_pr_comment "fixed" "$attempt"
+
+      echo "result=fixed" >> "$GITHUB_OUTPUT"
+      echo "attempts=$attempt" >> "$GITHUB_OUTPUT"
+      cleanup_ai_files
+      exit 0
+    fi
+
+    python3 -c "
+import json
+with open('${HISTORY_FILE}') as f:
+    history = json.load(f)
+if history:
+    with open('${TEST_OUTPUT_FILE}') as f:
+        history[-1]['test_output'] = f.read()[:3000]
+    with open('${HISTORY_FILE}', 'w') as f:
+        json.dump(history, f, indent=2)
+" 2>/dev/null || true
+
+    git checkout -- . 2>/dev/null || true
+  done
+
+  echo ""
+  echo "=== All $MAX_ATTEMPTS fix attempts exhausted. Reverting. ==="
+  git checkout -- . 2>/dev/null || true
+  git clean -fd 2>/dev/null || true
+  post_pr_comment "failed" "$MAX_ATTEMPTS"
+
+  echo "result=failed" >> "$GITHUB_OUTPUT"
+  echo "attempts=$MAX_ATTEMPTS" >> "$GITHUB_OUTPUT"
+  cleanup_ai_files
+  exit 1
+}
+
+run_investigation() {
+  echo ""
+  echo "--- Investigating dependency changes for proactive updates ---"
+  echo "[]" > "$HISTORY_FILE"
+
+  bash "$SCRIPTS_DIR/gather-context.sh" "$CONTEXT_FILE"
+
+  set +e
+  AI_MODE=investigate python3 "$SCRIPTS_DIR/ai-fix.py" "$CONTEXT_FILE" "1" "$HISTORY_FILE"
+  ai_exit=$?
+  set -e
+
+  # Exit code 3 = AI found no changes needed
+  if [[ $ai_exit -eq 3 ]]; then
+    echo "AI investigation: no changes needed — code is already up to date."
+    post_pr_comment "up-to-date" "0"
+    echo "result=already-passing" >> "$GITHUB_OUTPUT"
+    echo "attempts=0" >> "$GITHUB_OUTPUT"
+    cleanup_ai_files
+    exit 0
+  fi
+
+  if [[ $ai_exit -ne 0 ]]; then
+    echo "AI investigation failed to generate or apply changes."
+    git checkout -- . 2>/dev/null || true
+    echo "result=already-passing" >> "$GITHUB_OUTPUT"
+    echo "attempts=0" >> "$GITHUB_OUTPUT"
+    cleanup_ai_files
+    exit 0
+  fi
+
+  # AI applied changes — verify tests still pass
+  if [[ -n "${INSTALL_CMD:-}" ]]; then
+    echo "::group::Reinstalling dependencies"
+    eval "$INSTALL_CMD" 2>/dev/null || true
+    echo "::endgroup::"
+  fi
+
+  echo ""
+  echo "--- Verifying tests still pass after proactive changes ---"
+  if run_tests; then
+    echo ""
+    echo "Tests still pass after proactive update!"
+    commit_fixes "investigate"
+    post_pr_comment "investigated" "1"
+    echo "result=fixed" >> "$GITHUB_OUTPUT"
+    echo "attempts=1" >> "$GITHUB_OUTPUT"
+    cleanup_ai_files
+    exit 0
+  else
+    echo ""
+    echo "::warning::Proactive changes broke tests — reverting all changes."
+    git checkout -- . 2>/dev/null || true
+    git clean -fd 2>/dev/null || true
+    post_pr_comment "up-to-date" "0"
+    echo "result=already-passing" >> "$GITHUB_OUTPUT"
+    echo "attempts=0" >> "$GITHUB_OUTPUT"
+    cleanup_ai_files
+    exit 0
+  fi
+}
+
 # --- Main ---
 
-# Save initial state for revert
 INITIAL_SHA=$(git rev-parse HEAD)
 
 echo "=== AI Dependency Fixer ==="
+echo "Mode: $AI_MODE"
 echo "Test command: $TEST_CMD"
 echo "Max attempts: $MAX_ATTEMPTS"
 
@@ -166,13 +346,6 @@ run_tests
 initial_exit=$?
 set -e
 
-if [[ $initial_exit -eq 0 ]]; then
-  echo "result=already-passing" >> "$GITHUB_OUTPUT"
-  echo "attempts=0" >> "$GITHUB_OUTPUT"
-  cleanup_ai_files
-  exit 0
-fi
-
 if [[ $initial_exit -eq 2 ]]; then
   echo "::error::Cannot proceed — test runner is not installed. This is a project configuration issue, not something the AI can fix."
   echo "result=failed" >> "$GITHUB_OUTPUT"
@@ -181,73 +354,17 @@ if [[ $initial_exit -eq 2 ]]; then
   exit 1
 fi
 
-# Tests are failing, start fix loop
-echo "[]" > "$HISTORY_FILE"
-
-for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-  echo ""
-  echo "--- Fix attempt $attempt of $MAX_ATTEMPTS ---"
-
-  # Gather context
-  bash "$SCRIPTS_DIR/gather-context.sh" "$CONTEXT_FILE"
-
-  # Call AI for fix
-  set +e
-  python3 "$SCRIPTS_DIR/ai-fix.py" "$CONTEXT_FILE" "$attempt" "$HISTORY_FILE"
-  ai_exit=$?
-  set -e
-
-  if [[ $ai_exit -ne 0 ]]; then
-    echo "AI fix attempt $attempt failed to generate or apply a fix."
-    # Revert any partial changes from this attempt
-    git checkout -- . 2>/dev/null || true
-    continue
-  fi
-
-  # Re-install dependencies in case imports changed
-  if [[ -n "${INSTALL_CMD:-}" ]]; then
-    echo "::group::Reinstalling dependencies"
-    eval "$INSTALL_CMD" 2>/dev/null || true
-    echo "::endgroup::"
-  fi
-
-  # Run tests with the fix applied
-  if run_tests; then
+if [[ $initial_exit -eq 0 ]]; then
+  if [[ "$AI_MODE" == "investigate" ]]; then
     echo ""
-    echo "Tests pass after attempt $attempt!"
-    commit_fixes
-    post_pr_comment "fixed" "$attempt"
-
-    echo "result=fixed" >> "$GITHUB_OUTPUT"
-    echo "attempts=$attempt" >> "$GITHUB_OUTPUT"
+    echo "Tests are passing. Running investigation to check for proactive updates..."
+    run_investigation
+  else
+    echo "result=already-passing" >> "$GITHUB_OUTPUT"
+    echo "attempts=0" >> "$GITHUB_OUTPUT"
     cleanup_ai_files
     exit 0
   fi
-
-  # Tests still failing — update history with new test output
-  python3 -c "
-import json
-with open('${HISTORY_FILE}') as f:
-    history = json.load(f)
-if history:
-    with open('${TEST_OUTPUT_FILE}') as f:
-        history[-1]['test_output'] = f.read()[:3000]
-    with open('${HISTORY_FILE}', 'w') as f:
-        json.dump(history, f, indent=2)
-" 2>/dev/null || true
-
-  # Revert changes for next attempt (start fresh each time)
-  git checkout -- . 2>/dev/null || true
-done
-
-# All attempts exhausted
-echo ""
-echo "=== All $MAX_ATTEMPTS attempts exhausted. Reverting. ==="
-git checkout -- . 2>/dev/null || true
-git clean -fd 2>/dev/null || true
-post_pr_comment "failed" "$MAX_ATTEMPTS"
-
-echo "result=failed" >> "$GITHUB_OUTPUT"
-echo "attempts=$MAX_ATTEMPTS" >> "$GITHUB_OUTPUT"
-cleanup_ai_files
-exit 1
+else
+  run_fix_loop
+fi
