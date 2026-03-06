@@ -14,7 +14,11 @@ detect_test_cmd() {
       echo "npm test"
     fi
   elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]] || [[ -f "requirements.txt" ]]; then
-    echo "pytest"
+    if [[ -f "pyproject.toml" ]] && grep -q "poetry" pyproject.toml 2>/dev/null; then
+      echo "poetry run pytest"
+    else
+      echo "pytest"
+    fi
   elif [[ -f "go.mod" ]]; then
     echo "go test ./..."
   elif [[ -f "Cargo.toml" ]]; then

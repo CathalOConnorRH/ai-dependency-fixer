@@ -116,38 +116,49 @@ fi
 
 SOURCE_CONTENTS=$(read_file_contents "$IMPORTING_FILES")
 
-python3 -c "
-import json, sys
+# Write intermediate data to temp files to avoid shell-in-python quoting issues
+_TMPDIR=$(mktemp -d)
+echo "$PR_INFO" > "$_TMPDIR/pr_info.json"
+echo "$UPDATED_PKG" > "$_TMPDIR/updated_pkg.txt"
+echo "$DEP_DIFF" > "$_TMPDIR/dep_diff.txt"
+echo "$CHANGED_FILES" > "$_TMPDIR/changed_files.txt"
+echo "$IMPORTING_FILES" > "$_TMPDIR/importing_files.txt"
+echo "$SOURCE_CONTENTS" > "$_TMPDIR/source_contents.txt"
 
-context = {
-    'pr_info': json.loads('''${PR_INFO}'''),
-    'updated_package': '''${UPDATED_PKG}''',
-    'dependency_diff': $(python3 -c "import json; print(json.dumps('''${DEP_DIFF}'''[:5000]))"),
-    'changed_files': '''${CHANGED_FILES}'''.strip().split('\n'),
-    'test_output': open('.ai-test-output.txt').read()[:30000] if __import__('os').path.exists('.ai-test-output.txt') else '',
-    'importing_files': '''${IMPORTING_FILES}'''.strip().split('\n') if '''${IMPORTING_FILES}''' else [],
-    'source_contents': '''$(echo "$SOURCE_CONTENTS" | python3 -c "import sys; print(sys.stdin.read().replace('\\\\','\\\\\\\\').replace(\"'''\",\"\\\\'''\"))")'''
-}
-
-with open('${OUTPUT_FILE}', 'w') as f:
-    json.dump(context, f, indent=2)
-" 2>/dev/null || {
-  # Fallback: simpler context gathering
-  python3 << 'PYEOF'
+python3 << PYEOF
 import json, os
 
+def read_tmp(name, default=""):
+    path = os.path.join("${_TMPDIR}", name)
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        return default
+
+try:
+    pr_info = json.loads(read_tmp("pr_info.json", "{}"))
+except json.JSONDecodeError:
+    pr_info = {}
+
 context = {
+    "pr_info": pr_info,
+    "updated_package": read_tmp("updated_pkg.txt"),
+    "dependency_diff": read_tmp("dep_diff.txt")[:5000],
+    "changed_files": [f for f in read_tmp("changed_files.txt").split("\n") if f],
     "test_output": "",
-    "dependency_diff": "",
-    "changed_files": [],
-    "source_contents": ""
+    "importing_files": [f for f in read_tmp("importing_files.txt").split("\n") if f],
+    "source_contents": read_tmp("source_contents.txt")[:50000],
 }
 
 if os.path.exists(".ai-test-output.txt"):
     with open(".ai-test-output.txt") as f:
         context["test_output"] = f.read()[:30000]
 
+with open("${OUTPUT_FILE}", "w") as f:
+    json.dump(context, f, indent=2)
 PYEOF
-}
+
+rm -rf "$_TMPDIR"
 
 echo "Context gathered at ${OUTPUT_FILE}"
