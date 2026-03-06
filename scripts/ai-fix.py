@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Call Claude API to generate a fix for failing tests after a dependency update."""
+"""Call an LLM API to generate a fix for failing tests after a dependency update.
+
+Supports Anthropic (Claude), OpenAI, and OpenAI-compatible self-hosted models.
+"""
 
 import json
 import os
 import sys
 from pathlib import Path
-
-import anthropic
 
 SYSTEM_PROMPT = """You are an expert code migration assistant. A dependency has been updated \
 in this project and tests are now failing. Your job is to fix the source code so that all \
@@ -48,6 +49,12 @@ IMPORTANT: The "search" field must contain the EXACT text currently in the file,
 including whitespace and indentation. The "replace" field contains what it should be \
 changed to."""
 
+PROVIDER_DEFAULTS = {
+    "anthropic": "claude-sonnet-4-20250514",
+    "openai": "gpt-4o",
+    "openai-compatible": "gpt-4o",
+}
+
 
 def build_user_message(context: dict, attempt: int, previous_attempts: list) -> str:
     """Build the user message with all context for the AI."""
@@ -88,23 +95,62 @@ def build_user_message(context: dict, attempt: int, previous_attempts: list) -> 
     return "\n\n".join(parts)
 
 
-def call_claude(context: dict, attempt: int, previous_attempts: list) -> dict:
-    """Call Claude API and return the parsed response."""
+def call_anthropic(user_message: str, model: str) -> str:
+    """Call the Anthropic API and return the raw response text."""
+    import anthropic
+
     client = anthropic.Anthropic()
-    model = os.environ.get("AI_MODEL", "claude-sonnet-4-20250514")
-
-    user_message = build_user_message(context, attempt, previous_attempts)
-
     response = client.messages.create(
         model=model,
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
+    return response.content[0].text.strip()
 
-    response_text = response.content[0].text.strip()
 
-    # Extract JSON from the response (handle markdown code blocks)
+def call_openai(user_message: str, model: str, base_url: str | None = None) -> str:
+    """Call the OpenAI (or OpenAI-compatible) API and return the raw response text."""
+    import openai
+
+    kwargs = {}
+    if base_url:
+        kwargs["base_url"] = base_url
+        api_key = os.environ.get("AI_API_KEY", "not-needed")
+        kwargs["api_key"] = api_key
+
+    client = openai.OpenAI(**kwargs)
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=4096,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def call_llm(context: dict, attempt: int, previous_attempts: list) -> dict:
+    """Route to the configured LLM provider and return the parsed response."""
+    provider = os.environ.get("AI_PROVIDER", "anthropic").lower()
+    default_model = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["openai"])
+    model = os.environ.get("AI_MODEL", default_model)
+
+    user_message = build_user_message(context, attempt, previous_attempts)
+
+    if provider == "anthropic":
+        response_text = call_anthropic(user_message, model)
+    elif provider in ("openai", "openai-compatible"):
+        base_url = os.environ.get("AI_BASE_URL") if provider == "openai-compatible" else None
+        response_text = call_openai(user_message, model, base_url=base_url)
+    else:
+        raise ValueError(
+            f"Unknown AI provider: '{provider}'. "
+            "Supported providers: anthropic, openai, openai-compatible"
+        )
+
     if "```json" in response_text:
         response_text = response_text.split("```json")[1].split("```")[0].strip()
     elif "```" in response_text:
@@ -132,7 +178,6 @@ def validate_response(result: dict, max_diff_lines: int) -> tuple[bool, str]:
         if not Path(filepath).exists():
             return False, f"File does not exist: {filepath}"
 
-        # Block edits to lockfiles and dependency manifests
         blocked_patterns = [
             "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
             "poetry.lock", "Pipfile.lock", "Cargo.lock",
@@ -163,13 +208,11 @@ def apply_edits(edits: list) -> tuple[bool, str]:
             return False, f"Cannot read {filepath}: {e}"
 
         if search not in content:
-            # Try with normalized whitespace as fallback
             normalized_content = " ".join(content.split())
             normalized_search = " ".join(search.split())
             if normalized_search not in normalized_content:
                 return False, f"Search text not found in {filepath}:\n{search[:200]}"
 
-            # Find the original text by matching normalized form
             import re
             pattern = re.escape(normalized_search).replace(r"\ ", r"\s+")
             match = re.search(pattern, content)
@@ -199,9 +242,11 @@ def main():
         with open(history_file) as f:
             previous_attempts = json.load(f)
 
-    print(f"Calling AI for fix attempt {attempt}...")
+    provider = os.environ.get("AI_PROVIDER", "anthropic")
+    model = os.environ.get("AI_MODEL", PROVIDER_DEFAULTS.get(provider, ""))
+    print(f"Calling AI for fix attempt {attempt} (provider={provider}, model={model})...")
     try:
-        result = call_claude(context, attempt, previous_attempts)
+        result = call_llm(context, attempt, previous_attempts)
     except json.JSONDecodeError as e:
         print(f"::error::Failed to parse AI response as JSON: {e}")
         sys.exit(2)
@@ -214,7 +259,6 @@ def main():
     valid, reason = validate_response(result, max_diff_lines)
     if not valid:
         print(f"::warning::AI response rejected: {reason}")
-        # Save to history
         previous_attempts.append({
             "edits": result.get("edits", []),
             "analysis": result.get("analysis", reason),
@@ -238,7 +282,6 @@ def main():
             json.dump(previous_attempts, f, indent=2)
         sys.exit(2)
 
-    # Save successful attempt to history (test result added by fix-loop.sh)
     previous_attempts.append({
         "edits": result["edits"],
         "analysis": result.get("analysis", ""),
@@ -246,7 +289,6 @@ def main():
     with open(history_file, "w") as f:
         json.dump(previous_attempts, f, indent=2)
 
-    # Save edits for PR comment
     with open(".ai-last-edits.json", "w") as f:
         json.dump(result, f, indent=2)
 

@@ -22,11 +22,28 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # --- Pick ONE of the provider examples below ---
+
+      # Option 1: Anthropic (Claude) — default
       - uses: your-org/ai-dependency-fixer@v1
         with:
           ai-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          max-attempts: 3
-          # test-command: 'auto'       # auto-detected, or set explicitly
-          # install-command: 'auto'    # auto-detected, or set explicitly
-          # max-diff-lines: 200       # safety limit on AI edit size
-          # ai-model: 'claude-sonnet-4-20250514'
+          # ai-provider: anthropic            # default
+          # ai-model: claude-sonnet-4-20250514  # default
+          # max-attempts: 3
+          # max-diff-lines: 200
+
+      # Option 2: OpenAI (GPT)
+      # - uses: your-org/ai-dependency-fixer@v1
+      #   with:
+      #     ai-provider: openai
+      #     ai-api-key: ${{ secrets.OPENAI_API_KEY }}
+      #     # ai-model: gpt-4o               # default
+
+      # Option 3: Self-hosted (OpenAI-compatible API)
+      # - uses: your-org/ai-dependency-fixer@v1
+      #   with:
+      #     ai-provider: openai-compatible
+      #     ai-api-key: 'not-needed'
+      #     ai-base-url: 'http://localhost:11434/v1'
+      #     ai-model: 'llama3'

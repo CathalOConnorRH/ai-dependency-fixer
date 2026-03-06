@@ -6,8 +6,16 @@ branding:
 
 inputs:
   ai-api-key:
-    description: 'Anthropic API key for Claude'
+    description: 'API key for the chosen AI provider'
     required: true
+  ai-provider:
+    description: 'AI provider to use: anthropic, openai, or openai-compatible'
+    required: false
+    default: 'anthropic'
+  ai-base-url:
+    description: 'Base URL for OpenAI-compatible self-hosted models (e.g. http://localhost:11434/v1)'
+    required: false
+    default: ''
   max-attempts:
     description: 'Maximum number of fix attempts before giving up'
     required: false
@@ -25,9 +33,9 @@ inputs:
     required: false
     default: '200'
   ai-model:
-    description: 'Claude model to use'
+    description: 'Model to use (defaults depend on provider: claude-sonnet-4-20250514 for Anthropic, gpt-4o for OpenAI)'
     required: false
-    default: 'claude-sonnet-4-20250514'
+    default: ''
   github-token:
     description: 'GitHub token for PR comments'
     required: false
@@ -49,9 +57,21 @@ runs:
       with:
         python-version: '3.12'
 
-    - name: Install dependencies
+    - name: Install AI provider dependencies
       shell: bash
-      run: pip install anthropic
+      run: |
+        case "${{ inputs.ai-provider }}" in
+          anthropic)
+            pip install anthropic
+            ;;
+          openai|openai-compatible)
+            pip install openai
+            ;;
+          *)
+            echo "::error::Unknown AI provider: ${{ inputs.ai-provider }}. Use: anthropic, openai, or openai-compatible"
+            exit 1
+            ;;
+        esac
 
     - name: Detect language and commands
       id: detect
@@ -77,7 +97,11 @@ runs:
         INSTALL_CMD: ${{ steps.detect.outputs.install_cmd }}
         MAX_ATTEMPTS: ${{ inputs.max-attempts }}
         MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
+        AI_PROVIDER: ${{ inputs.ai-provider }}
         AI_MODEL: ${{ inputs.ai-model }}
-        ANTHROPIC_API_KEY: ${{ inputs.ai-api-key }}
+        AI_BASE_URL: ${{ inputs.ai-base-url }}
+        AI_API_KEY: ${{ inputs.ai-api-key }}
+        ANTHROPIC_API_KEY: ${{ inputs.ai-provider == 'anthropic' && inputs.ai-api-key || '' }}
+        OPENAI_API_KEY: ${{ inputs.ai-provider != 'anthropic' && inputs.ai-api-key || '' }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
