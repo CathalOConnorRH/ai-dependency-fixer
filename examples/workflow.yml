@@ -1,0 +1,32 @@
+# Add this file to your repo at .github/workflows/ai-dependency-fix.yml
+name: AI Dependency Fix
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  ai-fix:
+    # Only run on dependency update PRs from bots
+    if: >
+      github.actor == 'renovate[bot]' ||
+      github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: your-org/ai-dependency-fixer@v1
+        with:
+          ai-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          max-attempts: 3
+          # test-command: 'auto'       # auto-detected, or set explicitly
+          # install-command: 'auto'    # auto-detected, or set explicitly
+          # max-diff-lines: 200       # safety limit on AI edit size
+          # ai-model: 'claude-sonnet-4-20250514'
