@@ -30,6 +30,14 @@ run_tests() {
   else
     echo "Tests failed (exit code: $exit_code)."
     tail -50 "$TEST_OUTPUT_FILE"
+
+    # Detect if the test runner itself is missing (not a test failure the AI can fix)
+    if [[ $exit_code -eq 127 ]] || grep -qi "command not found" "$TEST_OUTPUT_FILE" 2>/dev/null; then
+      echo "::error::Test runner not found. Ensure your test framework (e.g. pytest) is listed as a project dependency."
+      echo "::error::If using Poetry, add pytest to [tool.poetry.group.dev.dependencies] in pyproject.toml"
+      return 2
+    fi
+
     return 1
   fi
 }
@@ -153,11 +161,24 @@ echo "Max attempts: $MAX_ATTEMPTS"
 # Initial test run
 echo ""
 echo "--- Initial test run ---"
-if run_tests; then
+set +e
+run_tests
+initial_exit=$?
+set -e
+
+if [[ $initial_exit -eq 0 ]]; then
   echo "result=already-passing" >> "$GITHUB_OUTPUT"
   echo "attempts=0" >> "$GITHUB_OUTPUT"
   cleanup_ai_files
   exit 0
+fi
+
+if [[ $initial_exit -eq 2 ]]; then
+  echo "::error::Cannot proceed — test runner is not installed. This is a project configuration issue, not something the AI can fix."
+  echo "result=failed" >> "$GITHUB_OUTPUT"
+  echo "attempts=0" >> "$GITHUB_OUTPUT"
+  cleanup_ai_files
+  exit 1
 fi
 
 # Tests are failing, start fix loop
